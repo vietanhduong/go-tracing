@@ -52,12 +52,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err = mod.AttachKprobe("__sys_accept4", "entry_accept4"); err != nil {
-		log.Printf("ERR: Failed to attach entry_accept4: %v", err)
-		os.Exit(1)
-	}
-	if err = mod.AttachKretprobe("__sys_accept4", "ret_accept4"); err != nil {
-		log.Printf("ERR: Failed to attach ret_accept4: %v", err)
+	if err = mod.AttachFExit("sys_accept4"); err != nil {
+		log.Printf("ERR: Failed to attach sys_accept4: %v", err)
 		os.Exit(1)
 	}
 
@@ -87,12 +83,6 @@ func process(raw []byte) {
 	log.Printf("INFO: PID: %d", conn.Id.Pid)
 	sock := parseSockaddr(conn.Raddr[:])
 	log.Printf("RADDR: %s", sock.String())
-	// log.Printf("INFO: RAddr: AF=%d, Port=%d, Addr=%v, raw=%v",
-	// 	byteorder.GetHostByteOrder().Uint16(rawAddr[0:2]),
-	// 	Htons(byteorder.GetHostByteOrder().Uint16(rawAddr[2:4])),
-	// 	ip(Htonl(byteorder.GetHostByteOrder().Uint32(rawAddr[20:24]))),
-	// 	rawAddr,
-	// )
 	log.Printf("============")
 }
 

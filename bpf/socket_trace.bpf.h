@@ -48,10 +48,3 @@ struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
 	__uint(max_entries, CFG_RINGBUF_MAX_ENTRIES);
 } connections SEC_MAPS_BPF;
-
-struct {
-	__uint(type, BPF_MAP_TYPE_HASH);
-	__type(key, __u64); // tpid_pid
-	__type(value, struct accept_args_t);
-	__uint(max_entries, 512);
-} active_accept_args SEC_MAPS_BPF;
