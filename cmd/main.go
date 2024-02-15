@@ -27,7 +27,7 @@ func main() {
 	src, err := compiler.Compile(ctx,
 		fmt.Sprintf("%s/bpf/socket_trace.bpf.c", root()),
 		compiler.WithInclude(fmt.Sprintf("%s/bpf", root()), fmt.Sprintf("%s/bpf/include", root())),
-		compiler.WithCFlags("-DCFG_RINGBUF_MAX_ENTRIES=16777216",
+		compiler.WithCFlags("-DCFG_RINGBUF_SIZE=16777216",
 			"-DCFG_CHUNK_SIZE=84"),
 		compiler.WithCompiler(os.Getenv("CC")),
 		compiler.WithOutputDir(fmt.Sprintf("%s/bpf", root())),
@@ -47,40 +47,34 @@ func main() {
 		os.Exit(1)
 	}
 	defer mod.Close()
-	if err = mod.OpenRingBuffer("connections", nil); err != nil {
-		log.Printf("ERR: Failed to open ring buffer: %v", err)
-		os.Exit(1)
-	}
-
 	if err = mod.AttachFExit("sys_accept4"); err != nil {
 		log.Printf("ERR: Failed to attach sys_accept4: %v", err)
 		os.Exit(1)
 	}
 
-	log.Printf("INFO: Tracing started")
-	buf := mod.GetRingBuffer("connections")
-	go func() {
-		<-ctx.Done()
-		buf.Close()
-	}()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-			rec, err := buf.Read()
-			if err != nil {
-				log.Printf("ERR: Failed to read record: %v", err)
-				continue
-			}
-			process(rec.RawSample)
-		}
+	if err = mod.AttachFExit("sys_recvfrom"); err != nil {
+		log.Printf("ERR: Failed to attach sys_recvfrom: %v", err)
+		os.Exit(1)
 	}
+
+	closeSyscall := wbpf.FixSyscallName("sys_close")
+	if err = mod.AttachKprobe(closeSyscall, "entry_close"); err != nil {
+		log.Printf("ERR: Failed to attach kprobe (syscall=%s): %v", closeSyscall, err)
+		os.Exit(1)
+	}
+
+	if err = mod.AttachKretprobe(closeSyscall, "ret_close"); err != nil {
+		log.Printf("ERR: Failed to attach kretprobe (syscall=%s): %v", closeSyscall, err)
+		os.Exit(1)
+	}
+
+	log.Printf("INFO: Tracing started")
+	<-ctx.Done()
 }
 
 func process(raw []byte) {
 	conn := (*ConnInfo)(unsafe.Pointer(&raw[0]))
-	log.Printf("INFO: PID: %d", conn.Id.Pid)
+	log.Printf("INFO: PID: %d, EVENT: %s", conn.Id.Pid, conn.Event)
 	sock := parseSockaddr(conn.Raddr[:])
 	log.Printf("RADDR: %s", sock.String())
 	log.Printf("============")
@@ -110,31 +104,4 @@ func root() string {
 		panic(err)
 	}
 	return p
-}
-
-func ip(val uint32) net.IP {
-	ret := make(net.IP, 16)
-
-	binary.BigEndian.PutUint32(ret, val)
-	return ret
-}
-
-func Ntohl(i uint32) uint32 {
-	return binary.BigEndian.Uint32((*(*[4]byte)(unsafe.Pointer(&i)))[:])
-}
-
-func Htonl(i uint32) uint32 {
-	b := make([]byte, 4)
-	binary.BigEndian.PutUint32(b, i)
-	return *(*uint32)(unsafe.Pointer(&b[0]))
-}
-
-func Ntohs(i uint16) uint16 {
-	return binary.BigEndian.Uint16((*(*[2]byte)(unsafe.Pointer(&i)))[:])
-}
-
-func Htons(i uint16) uint16 {
-	b := make([]byte, 2)
-	binary.BigEndian.PutUint16(b, i)
-	return *(*uint16)(unsafe.Pointer(&b[0]))
 }

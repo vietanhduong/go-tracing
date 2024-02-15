@@ -6,6 +6,16 @@
 
 #include <socket_trace.bpf.h>
 
+static __inline __u64 gen_tgid_fd(__u32 tgid, __s32 fd)
+{
+	return ((__u64)tgid << 32) | (__u32)fd;
+}
+
+static __inline bool should_trace_af(sa_family_t family)
+{
+	return family == AF_UNKNOWN || family == AF_INET || family == AF_INET6;
+}
+
 static __inline struct conn_info_t build_conn_info(uint32_t tgid, int32_t fd)
 {
 	struct conn_id_t id = {};
@@ -60,37 +70,116 @@ read_sockaddr_kernel(struct conn_info_t *conn_info, const struct socket *socket)
 }
 
 static __inline void
-submit_new_conn(uint32_t tgid, int fd, struct accept_args_t *args)
+submit_new_conn(__u32 tgid, __s32 fd, const struct accept_args_t *args,
+		const enum srcfn_t src_fn)
 {
 	struct conn_info_t conn_info = build_conn_info(tgid, fd);
+	conn_info.src_fn = src_fn;
 	if (args->sock_alloc_socket != NULL) {
 		read_sockaddr_kernel(&conn_info, args->sock_alloc_socket);
 	} else if (args->addr != NULL) {
 		bpf_probe_read_user(
 			&conn_info.raddr, sizeof(conn_info.raddr), args->addr);
 	}
-	bpf_ringbuf_output(&connections, &conn_info, sizeof(conn_info), 0);
+	__u64 tgid_fd = gen_tgid_fd(tgid, fd);
+	bpf_map_update_elem(&conn_map, &tgid_fd, &conn_info, BPF_ANY);
+
+	if (!should_trace_af(conn_info.raddr.sa.sa_family)) {
+		return;
+	}
+	struct socket_event_t event = {};
+	event.type = SocketOpen;
+	event.timestamp_ns = bpf_ktime_get_ns();
+	event.conn_id = conn_info.id;
+	event.src_fn = src_fn;
+	bpf_ringbuf_output(&socket_events, &event, sizeof(event), 0);
 }
 
-static __inline void on_accept(uint64_t upid, int fd, struct accept_args_t *args)
+static __inline void
+submit_close_conn(struct conn_info_t *conn_info, enum srcfn_t src_fn)
 {
-	__u32 tgid = upid >> 32;
-	submit_new_conn(tgid, fd, args);
+	if (conn_info == NULL) {
+		return;
+	}
+	struct socket_event_t event = {};
+	event.type = SocketClose;
+	event.timestamp_ns = bpf_ktime_get_ns();
+	event.conn_id = conn_info->id;
+	event.src_fn = src_fn;
+	bpf_ringbuf_output(&socket_events, &event, sizeof(event), 0);
+}
+
+static __inline void process_close_conn(__u64 tgid, __s32 fd)
+{
+	__u64 tgid_fd = gen_tgid_fd(tgid, fd);
+	struct conn_info_t *conn_info = bpf_map_lookup_elem(&conn_map, &tgid_fd);
+	if (conn_info == NULL) {
+		return;
+	}
+
+	conn_info->tsid = bpf_ktime_get_ns();
+	bpf_map_update_elem(&conn_map, &tgid_fd, conn_info, BPF_ANY);
+}
+
+static __inline void
+process_data(const bool vecs, __u64 id, const struct data_args_t *args,
+	     ssize_t bytes_count)
+{
+}
+
+static __inline void
+process_syscall_data(__u64 id, const struct data_args_t *args, ssize_t bytes_count)
+{
+	process_data(false, id, args, bytes_count);
+}
+
+static __inline void process_syscall_vecs_data(
+	__u64 id, const struct data_args_t *args, ssize_t bytes_count)
+{
+	process_data(true, id, args, bytes_count);
 }
 
 SEC("fexit/__sys_accept4")
-int BPF_PROG(sys_accept4, int sockfd, struct sockaddr *addr, int *addrlen,
-	     int flags, int ret_fd)
+int BPF_PROG2(sys_accept4, int, sockfd, struct sockaddr *, addr, int *, addrlen,
+	      int, flags, int, ret_fd)
 {
 	if (ret_fd < 0) {
 		return 0;
 	}
 
-	__u64 id = bpf_get_current_pid_tgid();
+	__u64 tgid = bpf_get_current_pid_tgid() >> 32;
 	struct accept_args_t args = {};
 	args.sock_alloc_socket = NULL;
 	args.addr = addr;
-	on_accept(id, ret_fd, &args);
+	submit_new_conn(tgid, ret_fd, &args, SyscallAccept);
+	return 0;
+}
+
+SEC("fexit/__sys_recvfrom")
+int BPF_PROG2(sys_recvfrom, int, sockfd, char *, buf, size_t, size, int, flags,
+	      struct sockaddr *, addr, int *, addr_len, ssize_t, ret)
+{
+	bpf_printk("sys_recvfrom: count=%d, ret=%d\n", size, ret);
+	return 0;
+}
+
+SEC("kprobe/close")
+int BPF_KPROBE(entry_close, int fd)
+{
+	__u64 id = bpf_get_current_pid_tgid();
+	bpf_map_update_elem(&stash_close_map, &id, &fd, BPF_ANY);
+	return 0;
+}
+
+SEC("kretprobe/close")
+int BPF_KRETPROBE(ret_close, int ret)
+{
+	__u64 id = bpf_get_current_pid_tgid();
+	__s32 *fd = bpf_map_lookup_elem(&stash_close_map, &id);
+	if (fd != NULL) {
+		process_close_conn(id >> 32, *fd);
+	}
+	bpf_map_delete_elem(&stash_close_map, &id);
 	return 0;
 }
 

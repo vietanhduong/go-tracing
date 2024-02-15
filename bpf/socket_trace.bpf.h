@@ -2,6 +2,8 @@
 
 #include <lib/sections.h>
 
+#define EINPROGRESS  115
+
 #define MAX_MSG_SIZE 30720 // 30KiB
 #define CHUNK_SIZE   CFG_CHUNK_SIZE
 #define AF_UNKNOWN   0xff
@@ -22,6 +24,14 @@ struct conn_id_t {
 	uint64_t tsid;
 };
 
+enum srcfn_t {
+	UnknownFunc = 0,
+	SyscallAccept,
+	SyscallConnect,
+	SyscallClose,
+	SyscallRecvFrom,
+};
+
 struct conn_info_t {
 	struct conn_id_t id;
 	// IP address of the local endpoint.
@@ -29,7 +39,7 @@ struct conn_info_t {
 	// IP address of the remote endpoint.
 	union sockaddr_t raddr;
 
-	socklen_t addrlen;
+	enum srcfn_t src_fn;
 
 	bool is_http;
 	int64_t wr_bytes;
@@ -41,10 +51,46 @@ struct accept_args_t {
 	struct socket *sock_alloc_socket;
 };
 
-struct conn_info_t e__;
+struct data_args_t {
+	enum srcfn_t src_fn;
 
-// BPF Map Definitions
+	__s32 fd;
+
+	const struct iovec *iov;
+	__u64 iovlen;
+
+	unsigned int *msg_len;
+
+	const char *buf;
+};
+
+enum event_type_t {
+	SocketOpen,
+	SocketClose,
+};
+
+struct socket_event_t {
+	enum event_type_t type;
+	enum srcfn_t src_fn;
+	__u64 timestamp_ns;
+	struct conn_id_t conn_id;
+};
+
 struct {
-	__uint(type, BPF_MAP_TYPE_RINGBUF);
-	__uint(max_entries, CFG_RINGBUF_MAX_ENTRIES);
-} connections SEC_MAPS_BPF;
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 131072);
+	__type(key, __u64);
+	__type(value, struct conn_info_t);
+} conn_map SEC_MAPS_BPF;
+
+struct {
+	_uint(type, BPF_MAP_TYPE_RINGBUF);
+	_uint(max_entries, CFG_RINGBUF_SIZE);
+} socket_events SEC_MAPS_BPF;
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 10240);
+	__type(key, __u64);
+	__type(value, __s32);
+} stash_close_map SEC_MAPS_BPF;
