@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"unsafe"
+
+	"github.com/vietanhduong/wbpf"
 )
 
 func (c *Client) runSocketEventHandler(ctx context.Context) error {
@@ -16,32 +18,29 @@ func (c *Client) runSocketEventHandler(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to get table: conn_map: %w", err)
 	}
-
-	go func() {
-		<-ctx.Done()
-		events.Close()
-	}()
+	log.Infof("Start socket events handler...")
 	go func() {
 		for {
 			select {
 			case <-ctx.Done():
+				log.Infof("Stop socket events handler...")
 				return
 			default:
 				record, err := events.Read()
 				if err != nil {
-					log.WithError(err).Warn("failed to read event")
 					continue
 				}
 
 				event := (*SocketEvent)(unsafe.Pointer(&record.RawSample[0]))
-				if event.Type == SocketClose {
-					log.Debugf("socket close: %v", event)
-				} else {
-					var conn ConnInfo
-					if err := connMap.Lookup(event.ConnId.TgidFd(), &conn); err != nil {
+				log.Debugf("new event: %v", event)
+				log.Debugf("map size: %d", mapSize(connMap))
+				if event.Type == SocketOpen {
+					var b []byte
+					if err := connMap.Lookup(event.ConnId.TgidFd(), &b); err != nil {
 						log.WithError(err).Warnf("failed to lookup conn id: %d", event.ConnId.TgidFd())
 						continue
 					}
+					conn := (*ConnInfo)(unsafe.Pointer(&b[0]))
 					raddr := ParseSockaddr(conn.Raddr[:])
 					log.Debugf("socket open: %v, raddr: %v", event, raddr)
 				}
@@ -49,4 +48,16 @@ func (c *Client) runSocketEventHandler(ctx context.Context) error {
 		}
 	}()
 	return nil
+}
+
+func mapSize(m *wbpf.Table) int {
+	it := m.Iterate()
+	var count int
+	var key uint64
+	var val []byte
+	for it.Next(&key, &val) {
+		count++
+	}
+
+	return count
 }

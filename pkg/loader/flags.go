@@ -14,7 +14,7 @@ const (
 
 func RegisterFlags(fs *flag.FlagSet) {
 	fs.String(compilerFlag, "clang", "The `binary` used to compile C to BPF.")
-	fs.String(libdirFlag, "/var/lib/cooper/bpf", "The cooper's library directory which is contained BPF sources and headers.")
+	fs.String(libdirFlag, "/var/lib/tracing/bpf", "The cooper's library directory which is contained BPF sources and headers.")
 }
 
 func InitFromViper(v *viper.Viper) *Loader {

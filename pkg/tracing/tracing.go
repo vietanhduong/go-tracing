@@ -63,6 +63,26 @@ func (c *Client) Init(ctx context.Context) error {
 		return fmt.Errorf("failed to new module: %w", err)
 	}
 
+	if err = c.mod.AttachFExit("sys_accept4"); err != nil {
+		return fmt.Errorf("failed to attach sys_accept4: %w", err)
+	}
+
+	if err = c.mod.AttachFExit("sys_recvfrom"); err != nil {
+		return fmt.Errorf("failed to attach sys_recvfrom: %w", err)
+	}
+
+	sysclose := wbpf.FixSyscallName("sys_close")
+	if err = c.mod.AttachKprobe(sysclose, "entry_close"); err != nil {
+		return fmt.Errorf("failed to attach sys_close: %w", err)
+	}
+
+	if err = c.mod.AttachKretprobe(sysclose, "ret_close"); err != nil {
+		return fmt.Errorf("failed to attach sys_close: %w", err)
+	}
+
+	if err = c.mod.OpenRingBuffer("socket_events", nil); err != nil {
+		return fmt.Errorf("failed to open ring buffer: %w", err)
+	}
 	runtime.SetFinalizer(c, func(c *Client) { c.Close() })
 	return nil
 }

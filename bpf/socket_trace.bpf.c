@@ -6,7 +6,7 @@
 
 #include <socket_trace.bpf.h>
 
-static __inline __u64 gen_tgid_fd(__u32 tgid, __s32 fd)
+static __inline __u64 gen_tgid_fd(__u32 tgid, int fd)
 {
 	return ((__u64)tgid << 32) | (__u32)fd;
 }
@@ -16,7 +16,7 @@ static __inline bool should_trace_af(sa_family_t family)
 	return family == AF_UNKNOWN || family == AF_INET || family == AF_INET6;
 }
 
-static __inline struct conn_info_t build_conn_info(uint32_t tgid, int32_t fd)
+static __inline struct conn_info_t build_conn_info(__u32 tgid, int fd)
 {
 	struct conn_id_t id = {};
 	id.pid = tgid;
@@ -70,7 +70,7 @@ read_sockaddr_kernel(struct conn_info_t *conn_info, const struct socket *socket)
 }
 
 static __inline void
-submit_new_conn(__u32 tgid, __s32 fd, const struct accept_args_t *args,
+submit_new_conn(__u32 tgid, int fd, const struct accept_args_t *args,
 		const enum srcfn_t src_fn)
 {
 	struct conn_info_t conn_info = build_conn_info(tgid, fd);
@@ -109,16 +109,21 @@ submit_close_conn(struct conn_info_t *conn_info, enum srcfn_t src_fn)
 	bpf_ringbuf_output(&socket_events, &event, sizeof(event), 0);
 }
 
-static __inline void process_close_conn(__u64 tgid, __s32 fd)
+static __inline void process_close_conn(__u32 tgid, int fd)
 {
+	if (fd < 0) {
+		return;
+	}
 	__u64 tgid_fd = gen_tgid_fd(tgid, fd);
 	struct conn_info_t *conn_info = bpf_map_lookup_elem(&conn_map, &tgid_fd);
 	if (conn_info == NULL) {
 		return;
 	}
-
-	conn_info->tsid = bpf_ktime_get_ns();
-	bpf_map_update_elem(&conn_map, &tgid_fd, conn_info, BPF_ANY);
+	bpf_printk("close %d %d tgid_fd: %d\n", tgid, fd, tgid_fd);
+	if (should_trace_af(conn_info->raddr.sa.sa_family)) {
+		submit_close_conn(conn_info, SyscallClose);
+	}
+	bpf_map_delete_elem(&conn_map, &tgid_fd);
 }
 
 static __inline void
@@ -147,7 +152,7 @@ int BPF_PROG2(sys_accept4, int, sockfd, struct sockaddr *, addr, int *, addrlen,
 		return 0;
 	}
 
-	__u64 tgid = bpf_get_current_pid_tgid() >> 32;
+	__u32 tgid = bpf_get_current_pid_tgid() >> 32;
 	struct accept_args_t args = {};
 	args.sock_alloc_socket = NULL;
 	args.addr = addr;
@@ -159,7 +164,7 @@ SEC("fexit/__sys_recvfrom")
 int BPF_PROG2(sys_recvfrom, int, sockfd, char *, buf, size_t, size, int, flags,
 	      struct sockaddr *, addr, int *, addr_len, ssize_t, ret)
 {
-	bpf_printk("sys_recvfrom: count=%d, ret=%d\n", size, ret);
+	// bpf_printk("sys_recvfrom: count=%d, ret=%d\n", size, ret);
 	return 0;
 }
 
@@ -167,7 +172,9 @@ SEC("kprobe/close")
 int BPF_KPROBE(entry_close, int fd)
 {
 	__u64 id = bpf_get_current_pid_tgid();
-	bpf_map_update_elem(&stash_close_map, &id, &fd, BPF_ANY);
+	struct close_args_t args = {};
+	args.fd = fd;
+	bpf_map_update_elem(&stash_close_map, &id, &args, BPF_ANY);
 	return 0;
 }
 
@@ -175,9 +182,9 @@ SEC("kretprobe/close")
 int BPF_KRETPROBE(ret_close, int ret)
 {
 	__u64 id = bpf_get_current_pid_tgid();
-	__s32 *fd = bpf_map_lookup_elem(&stash_close_map, &id);
-	if (fd != NULL) {
-		process_close_conn(id >> 32, *fd);
+	struct close_args_t *args = bpf_map_lookup_elem(&stash_close_map, &id);
+	if (args != NULL && ret == 0) {
+		process_close_conn(id >> 32, args->fd);
 	}
 	bpf_map_delete_elem(&stash_close_map, &id);
 	return 0;
