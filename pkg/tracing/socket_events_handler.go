@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"unsafe"
 
+	"github.com/samber/lo"
 	"github.com/vietanhduong/wbpf"
 )
 
@@ -32,6 +33,9 @@ func (c *Client) runSocketEventHandler(ctx context.Context) error {
 				}
 
 				event := (*SocketEvent)(unsafe.Pointer(&record.RawSample[0]))
+				if !lo.Contains(c.targetPids, event.ConnId.Pid) {
+					continue
+				}
 				log.Debugf("new event: %v", event)
 				log.Debugf("map size: %d", mapSize(connMap))
 				if event.Type == SocketOpen {
@@ -41,6 +45,7 @@ func (c *Client) runSocketEventHandler(ctx context.Context) error {
 						continue
 					}
 					conn := (*ConnInfo)(unsafe.Pointer(&b[0]))
+					log.Debugf("Raw: %v", conn.Raddr)
 					raddr := ParseSockaddr(conn.Raddr[:])
 					log.Debugf("socket open: %v, raddr: %v", event, raddr)
 				}

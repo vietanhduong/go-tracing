@@ -115,11 +115,11 @@ static __inline void process_close_conn(__u32 tgid, int fd)
 		return;
 	}
 	__u64 tgid_fd = gen_tgid_fd(tgid, fd);
+	bpf_printk("close %d %d tgid_fd: %lld\n", tgid, fd, tgid_fd);
 	struct conn_info_t *conn_info = bpf_map_lookup_elem(&conn_map, &tgid_fd);
 	if (conn_info == NULL) {
 		return;
 	}
-	bpf_printk("close %d %d tgid_fd: %d\n", tgid, fd, tgid_fd);
 	if (should_trace_af(conn_info->raddr.sa.sa_family)) {
 		submit_close_conn(conn_info, SyscallClose);
 	}
@@ -172,21 +172,23 @@ SEC("kprobe/close")
 int BPF_KPROBE(entry_close, int fd)
 {
 	__u64 id = bpf_get_current_pid_tgid();
-	struct close_args_t args = {};
-	args.fd = fd;
-	bpf_map_update_elem(&stash_close_map, &id, &args, BPF_ANY);
+	process_close_conn(id >> 32, fd);
+	// __u64 id = bpf_get_current_pid_tgid();
+	// struct close_args_t args = {};
+	// args.fd = fd;
+	// bpf_map_update_elem(&stash_close_map, &id, &args, BPF_ANY);
 	return 0;
 }
 
 SEC("kretprobe/close")
 int BPF_KRETPROBE(ret_close, int ret)
 {
-	__u64 id = bpf_get_current_pid_tgid();
-	struct close_args_t *args = bpf_map_lookup_elem(&stash_close_map, &id);
-	if (args != NULL && ret == 0) {
-		process_close_conn(id >> 32, args->fd);
-	}
-	bpf_map_delete_elem(&stash_close_map, &id);
+	// __u64 id = bpf_get_current_pid_tgid();
+	// struct close_args_t *args = bpf_map_lookup_elem(&stash_close_map, &id);
+	// if (args != NULL && ret == 0) {
+	// 	process_close_conn(id >> 32, args->fd);
+	// }
+	// bpf_map_delete_elem(&stash_close_map, &id);
 	return 0;
 }
 

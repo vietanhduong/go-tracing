@@ -24,12 +24,14 @@ type Client struct {
 	mod    *wbpf.Module
 
 	// options
-	chunkSize int // default 84
+	chunkSize  int // default 84
+	targetPids []int32
 }
 
 func NewClient(args Args, opt ...Option) *Client {
 	this := &Client{
-		loader: args.Loader,
+		loader:    args.Loader,
+		chunkSize: 84,
 	}
 	for _, o := range opt {
 		o(this)
